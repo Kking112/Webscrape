@@ -1,0 +1,133 @@
+from bs4 import BeautifulSoup as soup
+from urllib.request import urlopen as uReq
+from selenium import webdriver
+from selenium.webdriver.common.keys import Keys
+import numpy as np
+import pandas as pd
+import time
+from selenium.webdriver import ActionChains
+import re
+#note in order to run this program, you must download chromedriver @ https://chromedriver.chromium.org/
+
+input("NOTE in order to run this program, you must use Google Chrome and download chromedriver @ https://chromedriver.chromium.org/ - input anything to continue")
+ticker = str(input('Input a ticker '))
+ticker = ticker.upper()
+driverpath = str(input('Input the path to chrome driver '))
+path_to_csv = str(input('Input a path to csv with file name (DO NOT ADD .CSV) '))
+days = str(input("Input the number of days back you want the data to show (365 days/year, 5 years = 365*5)"))
+
+
+#Insert the path to the driver
+driver = webdriver.Chrome(driverpath)
+#gets to the target webpage
+myurl = "https://www.macrotrends.net/"
+driver.get(myurl)
+click = driver.find_element_by_class_name("js-typeahead")
+click.click()
+click.send_keys(ticker)
+time.sleep(1)
+eps = driver.find_elements_by_xpath("//li[@data-index='7']")
+eps[0].click()
+#scrapes Annual EPS
+page_source = driver.page_source
+word_soup = soup(page_source,'html.parser')
+table = word_soup.find_all('table',{'class':"historical_data_table table"})[0]
+lst1=[]
+for tr in table.find_all('td'):
+    lst1.append(tr.text)
+
+def convert(lst):
+    it = iter(lst)
+    res_dic = dict(zip(it,it))
+    return res_dic
+
+dic1 = convert(lst1)
+
+
+from io import StringIO
+from datetime import datetime, timedelta
+
+import requests
+
+
+#gets data from yahoo finance
+class YahooFinanceHistory:
+    timeout = 2
+    crumb_link = 'https://finance.yahoo.com/quote/{0}/history?p={0}'
+    crumble_regex = r'CrumbStore":{"crumb":"(.*?)"}'
+    quote_link = 'https://query1.finance.yahoo.com/v7/finance/download/{quote}?period1={dfrom}&period2={dto}&interval=1d&events=history&crumb={crumb}'
+
+    def __init__(self, symbol, days_back=7):
+        self.symbol = symbol
+        self.session = requests.Session()
+        self.dt = timedelta(days=days_back)
+
+    def get_crumb(self):
+        response = self.session.get(self.crumb_link.format(self.symbol), timeout=self.timeout)
+        response.raise_for_status()
+        match = re.search(self.crumble_regex, response.text)
+        if not match:
+            raise ValueError('Could not get crumb from Yahoo Finance')
+        else:
+            self.crumb = match.group(1)
+
+    def get_quote(self):
+        if not hasattr(self, 'crumb') or len(self.session.cookies) == 0:
+            self.get_crumb()
+        now = datetime.utcnow()
+        dateto = int(now.timestamp())
+        datefrom = int((now - self.dt).timestamp())
+        url = self.quote_link.format(quote=self.symbol, dfrom=datefrom, dto=dateto, crumb=self.crumb)
+        response = self.session.get(url)
+        response.raise_for_status()
+        return pd.read_csv(StringIO(response.text), parse_dates=['Date'])
+
+#sets data to a DataFrame
+df = YahooFinanceHistory(ticker.upper(), days_back=days).get_quote()
+df['date'] = pd.to_datetime(df["Date"])
+df.drop('Date',axis=1)
+df.set_index(df['Date'],drop=True,inplace=True)
+df.drop('date',axis=1,inplace=True)
+df['Y'] = df['Date'].dt.year
+df
+df1 = pd.DataFrame.from_dict(dic1,orient='index')
+
+#Assigns respective EPS to year for each day, then gets P/E ratio, then creates CSV of the DataFrame
+df1['date'] = df1.index
+
+my_lst=[]
+for num in df1['date']:
+    my_lst.append(num)
+
+dic4={}
+for num, nums in zip(df1[0],my_lst):
+    dic4[nums]=num
+
+da_lst=[]
+for qy in df['Y']:
+    da_lst.append(qy)
+
+datlst=[]
+for qy in da_lst:
+    if qy == 2020 or qy == 2020:
+        datlst.append('null')
+    else:
+        datlst.append(dic4[str(qy)])
+df['eps']=datlst
+
+z_list = []
+for num in df['eps']:
+    z_list.append(num.replace('$', ''))
+df['eps'] = z_list
+
+mlist=[]
+for num, nums in zip(df['Adj Close'],df['eps']):
+    if nums != 'null':
+        nums= float(nums)
+        mlist.append(num/nums)
+    else:
+        mlist.append('null')
+
+df['p/e']=mlist
+
+df.to_csv(path_to_csv+".csv")
